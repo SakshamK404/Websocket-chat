@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro Chat</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+    <style>
+        /* Base Reset */
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        
+        /* The entire browser window */
+        body { 
+            background-color: #cbd5e1; /* Darker grey-blue background */
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh; 
+            width: 100vw;
+            overflow: hidden; /* Stops the browser itself from scrolling */
+        }
+        
+        /* The Main App Window - Made much larger! */
+        .chat-container {
+            width: 90vw;          /* Takes up 90% of screen width */
+            max-width: 1200px;    /* Stops it from getting too wide on huge monitors */
+            height: 90vh;         /* Takes up 90% of screen height */
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;     /* CRITICAL: Absolutely nothing can escape this box */
+        }
+
+        /* 1. Header (Strictly Locked) */
+        .header {
+            background: #2563eb;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            font-size: 1.5rem;
+            font-weight: bold;
+            flex-shrink: 0;       /* CRITICAL: Forbids the header from shrinking/squishing */
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            z-index: 10;
+        }
+
+        /* --- LOGIN PAGE --- */
+        #login-page {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: #f8fafc;
+        }
+        #login-page h2 { font-size: 2rem; color: #1e293b; margin-bottom: 10px; }
+        .input-group { display: flex; gap: 10px; margin-top: 20px; width: 100%; max-width: 400px; }
+
+        /* --- CHAT PAGE --- */
+        #chat-page {
+            display: none;
+            flex: 1;              /* Fills the remaining space inside the box */
+            flex-direction: column;
+            overflow: hidden;     /* CRITICAL: Keeps all chat contents inside */
+        }
+
+        /* 2. Message Area (The only part allowed to scroll) */
+        #messageArea {
+            flex: 1;              /* Fills space between header and footer */
+            background: #e2e8f0;
+            padding: 20px 40px;
+            overflow-y: auto;     /* CRITICAL: Tells the scrollbar to stay inside here */
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        /* 3. Input Area (Strictly Locked) */
+        .input-area {
+            background: white;
+            padding: 20px 40px;
+            border-top: 1px solid #e2e8f0;
+            display: flex;
+            gap: 15px;
+            flex-shrink: 0;       /* CRITICAL: Forbids the input box from squishing */
+        }
+
+        /* Inputs & Buttons */
+        input[type="text"] {
+            flex: 1;
+            padding: 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input[type="text"]:focus { border-color: #2563eb; }
+        
+        button {
+            padding: 16px 32px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background: #1d4ed8; }
+
+        /* Chat Bubbles */
+        .message-wrapper { display: flex; width: 100%; }
+        .my-message { justify-content: flex-end; }
+        .other-message { justify-content: flex-start; }
+        
+        .bubble {
+            max-width: 70%;
+            padding: 12px 18px;
+            border-radius: 12px;
+            background: white;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            font-size: 1.05rem;
+        }
+        .my-message .bubble { background: #dbeafe; border-bottom-right-radius: 2px; }
+        .other-message .bubble { background: white; border-bottom-left-radius: 2px; }
+        
+        .sender { font-size: 0.8rem; font-weight: bold; color: #2563eb; margin-bottom: 4px; display: block; }
+        
+        /* System Message (Join/Leave) */
+        .system-message { 
+            align-self: center; 
+            font-size: 0.85rem; 
+            font-weight: bold;
+            color: #64748b; 
+            background: #f1f5f9; 
+            padding: 6px 16px; 
+            border-radius: 20px; 
+        }
+    </style>
+</head>
+<body>
+
+    <div class="chat-container">
+        <div class="header">Global Chat Room</div>
+        
+        <div id="login-page">
+            <h2>Welcome to Pro Chat</h2>
+            <p style="color: #64748b;">Enter your name to join</p>
+            <div class="input-group">
+                <input type="text" id="name" placeholder="Your name..." autocomplete="off" />
+                <button onclick="connect()">Join</button>
+            </div>
+        </div>
+
+        <div id="chat-page">
+            <div id="messageArea"></div>
+
+            <div class="input-area">
+                <input type="text" id="message" placeholder="Type a message..." autocomplete="off" />
+                <button onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let stompClient = null;
+        let username = null;
+
+        const loginPage = document.getElementById('login-page');
+        const chatPage = document.getElementById('chat-page');
+        const messageInput = document.getElementById('message');
+        const messageArea = document.getElementById('messageArea');
+        const nameInput = document.getElementById('name');
+
+        // Allow 'Enter' key to join/send
+        nameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') connect(); });
+        messageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
+
+        function connect() {
+            username = nameInput.value.trim();
+            if (username) {
+                let socket = new SockJS('/ws');
+                stompClient = Stomp.over(socket);
+                stompClient.debug = null; 
+                stompClient.connect({}, onConnected, onError);
+            }
+        }
+
+        function onConnected() {
+            stompClient.subscribe('/topic/public', onMessageReceived);
+            stompClient.send("/app/chat.addUser", {}, JSON.stringify({sender: username, type: 'JOIN'}));
+            
+            loginPage.style.display = 'none';
+            chatPage.style.display = 'flex';
+            messageInput.focus();
+        }
+
+        function onError(error) {
+            alert('Could not connect to WebSocket server.');
+        }
+
+        function sendMessage() {
+            let messageContent = messageInput.value.trim();
+            if (messageContent && stompClient) {
+                let chatMessage = { sender: username, content: messageContent, type: 'CHAT' };
+                stompClient.send("/app/chat.sendMessage", {}, JSON.stringify(chatMessage));
+                messageInput.value = ''; 
+            }
+        }
+
+        function onMessageReceived(payload) {
+            let message = JSON.parse(payload.body);
+            let messageElement = document.createElement('div');
+
+            if (message.type === 'JOIN' || message.type === 'LEAVE') {
+                messageElement.classList.add('system-message');
+                messageElement.innerText = message.sender + (message.type === 'JOIN' ? ' joined' : ' left');
+            } else {
+                let isMyMessage = message.sender === username;
+                messageElement.classList.add('message-wrapper');
+                messageElement.classList.add(isMyMessage ? 'my-message' : 'other-message');
+
+                let senderNameHtml = isMyMessage ? '' : `<span class="sender">${message.sender}</span>`;
+
+                messageElement.innerHTML = `
+                    <div class="bubble">
+                        ${senderNameHtml}
+                        <span class="text">${message.content}</span>
+                    </div>
+                `;
+            }
+            
+            messageArea.appendChild(messageElement);
+            messageArea.scrollTop = messageArea.scrollHeight; 
+        }
+    </script>
+</body>
+</html>
